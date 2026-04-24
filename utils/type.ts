@@ -1,6 +1,5 @@
 import { ZodType } from "zod";
 import { ComponentType } from "react";
-import { BootstrapScriptDescriptor } from "react-dom/server";
 
 export type FieldKey = string;
 
@@ -275,10 +274,10 @@ type MutableFieldNodeBaseType<type extends FieldType> = {
         /** 刚初始化的节点，不需要渲染 */
         dirty: "uninitialized";
       };
-  cache: NodeCache;
+  cache: NodeCache<type>;
 };
 
-export type NodeCache = {
+export type NodeCache<type extends FieldType> = {
   /** 存储表单提交后导出的普通对象的缓存 */
   plainObj:
     | {
@@ -314,6 +313,7 @@ export type NodeCache = {
   // 该值与初始值的diff结果，深比较不相等dirty===true
   // 为了效率不考虑当前节点以及所有祖先节点的include，
   selfDirty: boolean;
+  touch: type extends "field" ? boolean : number;
 };
 
 export type MutableFieldNode<T extends FieldType> = T extends "field"

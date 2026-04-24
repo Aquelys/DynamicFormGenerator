@@ -187,6 +187,7 @@ class FormModel {
         },
         validator: "dirty",
         selfDirty: false,
+        touch: 0,
       },
       parent: undefined,
     };
