@@ -1,38 +1,118 @@
-import { AnyMutableFieldNode } from "./type";
+import { SubscribeManager } from "./subscribeManager";
+import { SubscribeNode } from "./subscribeType";
+import {
+  AnyMutableFieldNode,
+  MutableFieldNode,
+  MutableNestedFieldNode,
+} from "./type";
 
-class TouchManager {
-  static setTouch(field: AnyMutableFieldNode, touch: boolean) {
-    const dfs = (field: AnyMutableFieldNode, touch: boolean) => {
+export type NotifyFn = (
+  field: AnyMutableFieldNode,
+  sub: SubscribeNode,
+  touch: boolean,
+) => void;
+export class TouchManager {
+  static setTouched(
+    field: MutableFieldNode<"field">,
+    subscribeManager: SubscribeManager,
+    notify: NotifyFn,
+  ) {
+    const before = this.getTouch(field);
+    this.propagateTouchChanges(field, true, before, subscribeManager, notify);
+  }
+
+  static resetTouch(
+    field: AnyMutableFieldNode,
+    subscribeManager: SubscribeManager,
+    notify: NotifyFn,
+  ) {
+    const dfs = (field: AnyMutableFieldNode, sub?: SubscribeNode) => {
       if (field.type === "field") {
-        field.cache.touch = touch;
-      } else {
-        field.children.forEach((f) => {
-          dfs(f, touch);
-        });
-        field.cache.touch = touch ? field.children.length : 0;
+        field.cache.touch.value = false;
+        sub && notify(field, sub, false);
+        return;
       }
+
+      field.children.forEach((x) => dfs(x, sub?.children?.get(x.key)));
+      this.updateTouchCount(field);
+      this.setSelfTouch(field, false, subscribeManager, notify);
     };
 
-    let change = touch !== field.cache.touch;
-    dfs(field, touch);
+    const sub = subscribeManager.findNode(field.path.slice(1));
+    dfs(field, sub);
+  }
 
-    // 向上更新
-    let cur = field.parent;
-    while (cur && change) {
-      const before = cur.cache.touch === 0 ? false : true;
-
-      cur.cache.touch = cur.cache.touch + (touch ? 1 : -1);
-
-      const after = cur.cache.touch === 0 ? false : true;
-      change = before !== after;
-
-      cur = cur.parent;
+  static setSelfTouch(
+    field: AnyMutableFieldNode,
+    touch: boolean,
+    subscribeManager: SubscribeManager,
+    notify: NotifyFn,
+  ) {
+    if (field.type === "field") {
+      this.setTouched(field, subscribeManager, notify);
+    } else {
+      const before = this.getTouch(field);
+      field.cache.touch.value = touch;
+      this.propagateTouchChanges(
+        field,
+        touch,
+        before,
+        subscribeManager,
+        notify,
+      );
     }
   }
 
-  static getTouch(field: AnyMutableFieldNode) {
-    return typeof field.cache.touch === "boolean"
-      ? field.cache.touch
-      : field.cache.touch > 0;
+  static getTouch(field: AnyMutableFieldNode): boolean {
+    return field.type === "field"
+      ? field.cache.touch.value
+      : field.cache.touch.count > 0 || field.cache.touch.value;
+  }
+
+  static updateTouchCount(field: MutableNestedFieldNode) {
+    field.cache.touch.count = field.children.filter((x) =>
+      this.getTouch(x),
+    ).length;
+  }
+
+  private static propagateTouchChanges(
+    field: AnyMutableFieldNode,
+    newVal: boolean,
+    beforeVal: boolean,
+    subscribeManager: SubscribeManager,
+    notify: NotifyFn,
+  ) {
+    let change = newVal !== beforeVal;
+    const modifiedNodes: AnyMutableFieldNode[] = [field];
+    const subNode = subscribeManager.findNode(field.path.slice(1));
+    if (subNode) {
+      notify(field, subNode, newVal);
+    }
+    // 向上更新
+    let cur = field.parent;
+    while (cur && change) {
+      const before = this.getTouch(cur);
+
+      cur.cache.touch.count = cur.cache.touch.count + (newVal ? 1 : -1);
+
+      const after = this.getTouch(cur);
+      change = before !== after;
+      if (change) {
+        modifiedNodes.push(cur);
+      }
+
+      cur = cur.parent;
+    }
+
+    let curSub = subscribeManager.findNode(modifiedNodes.at(-1)!.path.slice(1));
+    // 数组的node倒着读，关系是从根部到叶子的方向
+    for (let i = modifiedNodes.length - 1; i >= 0; i--) {
+      if (curSub) {
+        notify(modifiedNodes[i], curSub, this.getTouch(modifiedNodes[i]));
+      } else {
+        break;
+      }
+      curSub = curSub.children?.get(modifiedNodes[i].path.at(-1)!);
+    }
   }
 }

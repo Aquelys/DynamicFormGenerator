@@ -17,7 +17,7 @@ export type VoidTopic = PickProps<"void">;
 
 export const ValueTypeOfProps = {
   dirty: "immediate",
-  touch: "lazy",
+  touch: "immediate",
   value: "lazy",
   rawValue: "lazy",
   error: "immediate",

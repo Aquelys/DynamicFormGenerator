@@ -30,7 +30,7 @@ export type FormCommands = {
     path: FieldPath,
     values: any,
     option: {
-      invokeEffect?: boolean;
+      setTouch: boolean;
     },
     keepStrategy: ValueMergeStrategy,
   ) => void;
@@ -54,6 +54,10 @@ export type FormCommands = {
     enableEnhancer: boolean,
     ruleSet?: string,
   ) => Promise<void>;
+};
+
+export type SetValueArgumentType = {
+  setTouch: boolean;
 };
 
 export interface ReactiveRule {
@@ -313,7 +317,14 @@ export type NodeCache<type extends FieldType> = {
   // 该值与初始值的diff结果，深比较不相等dirty===true
   // 为了效率不考虑当前节点以及所有祖先节点的include，
   selfDirty: boolean;
-  touch: type extends "field" ? boolean : number;
+  touch: type extends "field"
+    ? {
+        value: boolean;
+      }
+    : {
+        value: boolean;
+        count: number;
+      };
 };
 
 export type MutableFieldNode<T extends FieldType> = T extends "field"
