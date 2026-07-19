@@ -200,7 +200,7 @@ export default function OnValueChangeTestPage() {
 
   const updateTaskABySetItem = () => {
     const suffix = Date.now().toString().slice(-4);
-    model.setItemOfArray(
+    model.removeItemOfArray(
       TASKS_PATH,
       "taskA",
       {
@@ -216,7 +216,7 @@ export default function OnValueChangeTestPage() {
   };
 
   const deleteTaskABySetItem = () => {
-    model.setItemOfArray(TASKS_PATH, "taskA", undefined, true, true);
+    model.removeItemOfArray(TASKS_PATH, "taskA", undefined, true, true);
   };
 
   const runCoordinationFlow = () => {
@@ -237,7 +237,7 @@ export default function OnValueChangeTestPage() {
       undefined,
       true,
     );
-    model.setItemOfArray(
+    model.removeItemOfArray(
       TASKS_PATH,
       "taskA",
       {
@@ -265,7 +265,7 @@ export default function OnValueChangeTestPage() {
       "taskA",
       true,
     );
-    model.setItemOfArray(TASKS_PATH, "taskA", undefined, true, true);
+    model.removeItemOfArray(TASKS_PATH, "taskA", undefined, true, true);
   };
 
   const tasksDirty = !!model.findNodeByPath(TASKS_PATH)?.cache.selfDirty;

@@ -553,7 +553,7 @@ export default function ArrayTestPage() {
 
   // 删除服务器
   const handleDeleteServer = (key: string) => {
-    model.setItemOfArray(["servers"], key, undefined);
+    model.removeItemOfArray(["servers"], key, undefined);
     message.success(`已删除服务器: ${key}`);
   };
 

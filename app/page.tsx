@@ -2,6 +2,10 @@
 import { Card, Space, Typography } from "antd";
 
 const pages = [
+  {
+    href: "/final-form-nested-subscribe-test",
+    label: "Final Form 嵌套字段订阅测试",
+  },
   { href: "/rhf-subscribe-test", label: "react-hook-form 订阅回调测试" },
   { href: "/on-value-change-test", label: "onValueChange 函数测试" },
   { href: "/multi-effect-test", label: "多 effect 联动测试" },

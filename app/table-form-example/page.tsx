@@ -574,7 +574,7 @@ export default function TableFormExamplePage() {
     }
 
     const lastKey = keys[keys.length - 1];
-    model.setItemOfArray(["items"], lastKey, undefined, true, true);
+    model.removeItemOfArray(["items"], lastKey, undefined, true, true);
   };
 
   const onReset = () => {

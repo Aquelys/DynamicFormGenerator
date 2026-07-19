@@ -49,7 +49,7 @@ class PlainObjectCacheManager {
   rebuild<T extends FieldType>(node: MutableFieldNode<T>) {
     function dfs<T extends FieldType>(
       node: MutableFieldNode<T>,
-    ): NodeCache["plainObj"] & { type: "ready" | "void" } {
+    ): NodeCache<T>["plainObj"] & { type: "ready" | "void" } {
       const include = node.dynamicProp.include;
 
       if (node.type === "field") {

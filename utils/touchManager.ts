@@ -11,6 +11,7 @@ export type NotifyFn = (
   sub: SubscribeNode,
   touch: boolean,
 ) => void;
+
 export class TouchManager {
   static setTouched(
     field: MutableFieldNode<"field">,

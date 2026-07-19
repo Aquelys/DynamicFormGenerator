@@ -1,48 +1,52 @@
 // ----------------------------- 内部模型层 -----------------------------
-import { z, ZodType, ZodError } from "zod";
-import {
-  markMutableNodeDirty,
-  mutableNodeToImmutableNode,
-  setMutableNode,
-} from "./immutableHelper";
-import { PlainObjectCacheManager } from "./plainObjectCacheManager";
-import { ValidatorCacheManager } from "./validatorCacheManager";
-import {
-  FieldValue,
-  FieldSchema,
-  LeafFieldDynamicProp,
-  FieldPath,
-  MutableFieldNode,
-  FieldKey,
-  ControlType,
-  ImmutableFormState,
-  EffectInvokeReason,
-  ReactiveEffect,
-  ReactiveRule,
-  FormCommands,
-  FieldSource,
-  ValueMergeStrategy,
-  InitialValueObject,
-  AnyMutableFieldNode,
-  ValueProxy,
-  GetValueOption,
-} from "./type";
+import { z, ZodError, ZodType } from "zod";
+import { compareNodeDirty, DirtyManager } from "./dirtyManager";
 import {
   compileArrayMutableNode,
   compileOneMutableNode,
   isChildNode,
   isSamePath,
 } from "./helper";
-import { compareNodeDirty, DirtyManager } from "./dirtyManager";
-import { SubscribeNode } from "./subscribeType";
-import { SubscribeManager } from "./subscribeManager";
+import {
+  markMutableNodeDirty,
+  mutableNodeToImmutableNode,
+  setMutableNode,
+} from "./immutableHelper";
 import {
   setNodeHasNoValue,
-  setNodeValueOnChain,
   setNodeHasValue,
   setNodeValue,
+  setNodeValueOnChain,
 } from "./nodeValueGetterHelper";
-import { ValueOptions } from "postcss/lib/container";
+import { PlainObjectCacheManager } from "./plainObjectCacheManager";
+import { SubscribeManager } from "./subscribeManager";
+import {
+  SubscribeNode,
+  SubscribePropValueType,
+  SubscribeTopic,
+} from "./subscribeType";
+import { TouchManager } from "./touchManager";
+import {
+  AnyMutableFieldNode,
+  ControlType,
+  EffectInvokeReason,
+  FieldKey,
+  FieldPath,
+  FieldSchema,
+  FieldSource,
+  FieldValue,
+  FormCommands,
+  GetValueOption,
+  ImmutableFormState,
+  InitialValueObject,
+  LeafFieldDynamicProp,
+  MutableFieldNode,
+  ReactiveEffect,
+  SetValueArgumentType,
+  ValueMergeStrategy,
+  ValueProxy
+} from "./type";
+import { ValidatorCacheManager } from "./validatorCacheManager";
 
 interface FormSchema {
   fields: FieldSchema[];
@@ -143,7 +147,7 @@ class FormModel {
       values: Record<string, any>,
       option?,
       keepStrategy?: ValueMergeStrategy,
-    ) => this.setValue(path, values, option, keepStrategy, true),
+    ) => this.setValue(path, values, keepStrategy, option, true),
     setVisible: (path: FieldPath, visible: boolean) =>
       this.setVisible(path, visible, true),
     setAlertTip: (path: FieldPath, alertTip: React.ReactNode) =>
@@ -187,7 +191,10 @@ class FormModel {
         },
         validator: "dirty",
         selfDirty: false,
-        touch: 0,
+        touch: {
+          count: 0,
+          value: false,
+        },
       },
       parent: undefined,
     };
@@ -286,6 +293,16 @@ class FormModel {
     this.subscribeManager.subscribe(path, "dirty", onChange);
 
     return () => this.subscribeManager.unsubscribe(path, "dirty", onChange);
+  }
+
+  onFieldStateChange<T extends SubscribeTopic>(
+    path: FieldPath,
+    prop: T,
+    onChange: (value: SubscribePropValueType<T>) => void,
+  ) {
+    this.subscribeManager.subscribe(path, prop, onChange);
+
+    return () => this.subscribeManager.unsubscribe(path, prop, onChange);
   }
 
   get(path: FieldPath, prop: "value" | "rawValue" | "visible"): any {
@@ -513,13 +530,11 @@ class FormModel {
   setValue(
     path: FieldPath,
     values: Record<string, any>,
-    option?: {
-      invokeEffect?: boolean;
-    },
     keepStrategy?: ValueMergeStrategy,
+    option?: SetValueArgumentType,
     shouldNotify: boolean = false,
   ) {
-    this.setValueInternal(path, values, "user", option, keepStrategy);
+    this.setValueInternal(path, values, "user", keepStrategy, option?.setTouch);
     if (shouldNotify) {
       this.notify();
     }
@@ -600,10 +615,8 @@ class FormModel {
     path: FieldPath,
     values: Record<string, any>,
     source: FieldSource,
-    option?: {
-      invokeEffect?: boolean;
-    },
     keepStrategy: ValueMergeStrategy = "merge",
+    setTouch?: boolean,
   ) {
     const initialValue = this.dirtyManager.findInitialValue(path);
     const keepPrevious = keepStrategy === "merge";
@@ -622,11 +635,10 @@ class FormModel {
         if (node.type === "field") {
           // 如果值相同，不更新
           if (Object.is(node.dynamicProp.value, value)) {
-            return false;
+          } else {
+            node.dynamicProp.value = value;
+            valueUpdated = true;
           }
-
-          node.dynamicProp.value = value;
-          valueUpdated = true;
         }
         if (node.type === "object") {
           if (initial && initial?.type !== "object") {
@@ -822,6 +834,20 @@ class FormModel {
 
           // 渲染层
           update(node);
+        }
+
+        // 涉及到的需要被touch
+        // 通知touch
+        if (setTouch) {
+          if (node.type === "field") {
+            TouchManager.setTouched(
+              node,
+              this.subscribeManager,
+              (_field, sub, touch) => {
+                this.subscribeManager.setNewValue(sub, "touch", touch);
+              },
+            );
+          }
         }
         return valueUpdated || structureUpdated;
       };
@@ -1054,16 +1080,14 @@ class FormModel {
   }
 
   /**
-   * 设置或删除数组字段中的某一项元素
+   * 删除数组字段中的某一项元素
    * @param path 数组节点的路径
-   * @param key 要设置或删除的元素的 key
-   * @param value 元素的值；如果为 undefined，则删除该元素
+   * @param key 要删除的元素的 key
    */
-  setItemOfArray(
+  removeItemOfArray(
     path: FieldPath,
     key: FieldKey,
-    value: any,
-    shouldTriggerRule: boolean = true,
+    option?: SetValueArgumentType,
     shouldNotify: boolean = false,
   ) {
     const node = this.findNodeByPath(path);
@@ -1077,67 +1101,58 @@ class FormModel {
       throw new Error("this field is not an array:" + path);
     }
 
-    if (value === undefined) {
-      // 删除元素
-      const targetIndex = node.children.findIndex((child) => child.key === key);
-      if (targetIndex === -1) {
-        throw new Error("the target key is not found in array: " + key);
-      }
-      const targetField = node.children[targetIndex];
-      const targetInitial = initialNode?.children.find(
-        (x) => x.key === targetField.key,
-      );
+    const targetIndex = node.children.findIndex((child) => child.key === key);
+    if (targetIndex === -1) {
+      throw new Error("the target key is not found in array: " + key);
+    }
+    const targetField = node.children[targetIndex];
+    const targetInitial = initialNode?.children.find(
+      (x) => x.key === targetField.key,
+    );
 
-      // 通知
-      this.notifyNodeTree(
-        targetField,
-        subNode?.children?.get(targetField.key),
-        targetInitial,
-        true,
-        false,
-        this.dirtyManager.getEffIncludeValue(path) &&
-          (targetInitial?.include ?? false),
-      );
+    // 删除元素
+    node.children.splice(targetIndex, 1);
 
-      node.children.splice(targetIndex, 1);
-      subNode &&
-        setNodeValueOnChain(
-          path,
-          this.subscribeManager,
-          this.plainCacheManager,
-        );
+    this.plainCacheManager.updateNode(node);
+    // 通知
+    this.notifyNodeTree(
+      targetField,
+      subNode?.children?.get(targetField.key),
+      targetInitial,
+      true,
+      false,
+      this.dirtyManager.getEffIncludeValue(path) &&
+        (targetInitial?.include ?? false),
+    );
 
-      this.dirtyManager.updateDirtyOnChain(path, (subNode, field, dirty) => {
-        this.subscribeManager.setNewValue(subNode, "dirty", dirty);
-      });
-
-      markMutableNodeDirty(node);
-    } else {
-      // 设置或更新元素
-      const hasKey = node.children.some((child) => child.key === key);
-
-      if (!hasKey) {
-        // key 不存在，抛出异常
-        throw new Error("the node is not found: " + path + ", key: " + key);
-      } else {
-        // key 存在，使用 setValues 更新该元素
-        this.setValue(
-          path,
-          { [key]: value },
-          { invokeEffect: shouldTriggerRule },
-          "merge",
-          false,
-        );
+    if (subNode) {
+      setNodeValueOnChain(path, this.subscribeManager, this.plainCacheManager);
+      if (option?.setTouch !== false) {
+        this.subscribeManager.setNewValue(subNode, "touch", true);
       }
     }
 
-    this.plainCacheManager.updateNode(node);
+    this.dirtyManager.updateDirtyOnChain(path, (subNode, _field, dirty) => {
+      this.subscribeManager.setNewValue(subNode, "dirty", dirty);
+    });
+
+    TouchManager.setSelfTouch(
+      node,
+      true,
+      this.subscribeManager,
+      (_field, sub, touch) => {
+        this.subscribeManager.setNewValue(sub, "touch", touch);
+      },
+    );
+
+    markMutableNodeDirty(node);
+
     this.validatorCacheManager.updateNode(node);
 
     if (shouldNotify) {
       this.notify();
-      this.subscribeManager.notify();
     }
+    this.subscribeManager.notify();
   }
 
   getSnapshot(): ImmutableFormState {
@@ -1560,13 +1575,13 @@ class FormModel {
    */
   resetField(path?: FieldPath, shouldNotify: boolean = true) {
     const targetPath = path || [];
-    const node = this.findNodeByPath(targetPath);
+    const field = this.findNodeByPath(targetPath);
 
-    if (!node) {
+    if (!field) {
       throw new Error("the field is not found: " + targetPath.join("."));
     }
     this.dirtyManager.resetField(
-      node,
+      field,
       (field, subNode, dirty, effectiveInclude) => {
         field && this.plainCacheManager.updateNode(field);
         field && this.validatorCacheManager.updateNode(field);
@@ -1587,27 +1602,26 @@ class FormModel {
         }
       },
     );
+    TouchManager.resetTouch(
+      field,
+      this.subscribeManager,
+      (field, sub, touch) => {
+        this.subscribeManager.setNewValue(sub, "touch", touch);
+      },
+    );
     // 重建缓存
     this.plainCacheManager.rebuild(this.mutableDataSource);
     this.validatorCacheManager.rebuild();
 
     if (shouldNotify) {
       this.notify();
-      this.subscribeManager.notify();
     }
+    this.subscribeManager.notify();
   }
 }
 
 export { FormModel };
 export type {
-  FieldPath,
-  FieldKey,
-  FieldValue,
-  FieldSchema,
-  FormSchema,
-  LeafFieldDynamicProp as FieldState,
-  ControlType,
-  MutableFieldNode,
-  EffectInvokeReason,
-  ReactiveEffect,
+  ControlType, EffectInvokeReason, FieldKey, FieldPath, FieldSchema, LeafFieldDynamicProp as FieldState, FieldValue, FormSchema, MutableFieldNode, ReactiveEffect
 };
+
