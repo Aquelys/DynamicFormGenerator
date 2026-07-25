@@ -17,6 +17,7 @@ const pages = [
   { href: "/test-dirty-api", label: "test-dirty-api" },
   { href: "/test-dirty-include-rule", label: "test-dirty-include-rule" },
   { href: "/on-dirty-change-test", label: "onDirtyChange 函数测试" },
+  { href: "/touch-notification-test", label: "Touch 通知监听测试" },
   { href: "/test-include-policy", label: "test-include-policy" },
   { href: "/validation-demo", label: "validation-demo" },
   { href: "/table-form-example", label: "table-form-example" },

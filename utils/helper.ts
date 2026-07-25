@@ -92,6 +92,10 @@ export function compileOneMutableNode(
         plainObj: { type: "dirty", lastValue: { include: false } },
         validator: "dirty",
         selfDirty: dirty ?? false,
+        touch: {
+          count: 0,
+          value: false,
+        },
       },
     };
   } else if ("isArray" in item && !item.isArray) {
@@ -116,6 +120,10 @@ export function compileOneMutableNode(
         plainObj: { type: "dirty", lastValue: { include: false } },
         validator: "dirty",
         selfDirty: dirty ?? false,
+        touch: {
+          count: 0,
+          value: false,
+        },
       },
     };
   } else {
@@ -153,6 +161,9 @@ export function compileOneMutableNode(
         plainObj: { type: "dirty", lastValue: { include: false } },
         validator: "dirty",
         selfDirty: dirty ?? false,
+        touch: {
+          value: false,
+        },
       },
     };
   }

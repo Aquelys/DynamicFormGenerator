@@ -25,6 +25,8 @@ export type EffectInvokeReason =
 
 export type FormCommands = {
   getValue: (path: FieldPath) => FieldValue;
+  getTouch: (path: FieldPath) => boolean;
+  setTouch: (path: FieldPath, touch: boolean) => void;
   setVisible: (path: FieldPath, visible: boolean) => void;
   setValue: (
     path: FieldPath,

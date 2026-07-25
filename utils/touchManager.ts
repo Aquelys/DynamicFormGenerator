@@ -16,9 +16,10 @@ export class TouchManager {
   static setTouched(
     field: MutableFieldNode<"field">,
     subscribeManager: SubscribeManager,
-    notify: NotifyFn,
+    notify?: NotifyFn,
   ) {
     const before = this.getTouch(field);
+    field.cache.touch.value = true;
     this.propagateTouchChanges(field, true, before, subscribeManager, notify);
   }
 
@@ -36,11 +37,14 @@ export class TouchManager {
 
       field.children.forEach((x) => dfs(x, sub?.children?.get(x.key)));
       this.updateTouchCount(field);
-      this.setSelfTouch(field, false, subscribeManager, notify);
+      field.cache.touch.value = false;
     };
 
     const sub = subscribeManager.findNode(field.path.slice(1));
+    const before = this.getTouch(field);
+    debugger;
     dfs(field, sub);
+    this.propagateTouchChanges(field, false, before, subscribeManager, notify);
   }
 
   static setSelfTouch(
@@ -76,19 +80,25 @@ export class TouchManager {
     ).length;
   }
 
+  /**
+   * 通知当前字段以及整个祖先链上的所有节点的touch变化
+   *
+   * @param field 当前发生变更的字段或节点
+   * @param newVal 新的touch状态
+   * @param beforeVal 变更前的touch状态
+   * @param subscribeManager 订阅管理器
+   * @param notify 通知回调
+   */
   private static propagateTouchChanges(
     field: AnyMutableFieldNode,
     newVal: boolean,
     beforeVal: boolean,
     subscribeManager: SubscribeManager,
-    notify: NotifyFn,
+    notify?: NotifyFn,
   ) {
     let change = newVal !== beforeVal;
     const modifiedNodes: AnyMutableFieldNode[] = [field];
-    const subNode = subscribeManager.findNode(field.path.slice(1));
-    if (subNode) {
-      notify(field, subNode, newVal);
-    }
+
     // 向上更新
     let cur = field.parent;
     while (cur && change) {
@@ -105,15 +115,20 @@ export class TouchManager {
       cur = cur.parent;
     }
 
+    // debugger;
     let curSub = subscribeManager.findNode(modifiedNodes.at(-1)!.path.slice(1));
     // 数组的node倒着读，关系是从根部到叶子的方向
     for (let i = modifiedNodes.length - 1; i >= 0; i--) {
       if (curSub) {
-        notify(modifiedNodes[i], curSub, this.getTouch(modifiedNodes[i]));
+        notify?.(modifiedNodes[i], curSub, this.getTouch(modifiedNodes[i]));
       } else {
         break;
       }
-      curSub = curSub.children?.get(modifiedNodes[i].path.at(-1)!);
+
+      if (i === 0) {
+        break;
+      }
+      curSub = curSub.children?.get(modifiedNodes[i - 1].path.at(-1)!);
     }
   }
 }

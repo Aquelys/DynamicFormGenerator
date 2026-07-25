@@ -44,7 +44,7 @@ import {
   ReactiveEffect,
   SetValueArgumentType,
   ValueMergeStrategy,
-  ValueProxy
+  ValueProxy,
 } from "./type";
 import { ValidatorCacheManager } from "./validatorCacheManager";
 
@@ -142,6 +142,9 @@ class FormModel {
 
   public formCommands: FormCommands = {
     getValue: (path: FieldPath) => this.get(path, "rawValue"),
+    getTouch: (path: FieldPath) => this.getTouch(path),
+    setTouch: (path: FieldPath, touch: boolean) =>
+      this.setTouch(path, touch, true),
     setValue: (
       path: FieldPath,
       values: Record<string, any>,
@@ -303,6 +306,56 @@ class FormModel {
     this.subscribeManager.subscribe(path, prop, onChange);
 
     return () => this.subscribeManager.unsubscribe(path, prop, onChange);
+  }
+
+  /** Get the effective touch state of a field. */
+  getTouch(path: FieldPath): boolean {
+    const field = this.findNodeByPath(path);
+    if (!field) {
+      throw new Error("the field is not found: " + path);
+    }
+
+    return TouchManager.getTouch(field);
+  }
+
+  /**
+   * Set the touch state of a field.
+   * Clearing a nested field also clears its descendants so its effective
+   * touch state becomes false.
+   */
+  setTouch(
+    path: FieldPath,
+    touch: boolean,
+    shouldNotify: boolean = false,
+  ): void {
+    const field = this.findNodeByPath(path);
+    if (!field) {
+      throw new Error("the field is not found: " + path);
+    }
+
+    const notifyTouch = (
+      _field: AnyMutableFieldNode,
+      sub: SubscribeNode,
+      nextTouch: boolean,
+    ) => {
+      this.subscribeManager.setNewValue(sub, "touch", nextTouch);
+    };
+
+    if (touch) {
+      TouchManager.setSelfTouch(
+        field,
+        true,
+        this.subscribeManager,
+        notifyTouch,
+      );
+    } else {
+      TouchManager.resetTouch(field, this.subscribeManager, notifyTouch);
+    }
+
+    if (shouldNotify) {
+      this.notify();
+    }
+    this.subscribeManager.notify();
   }
 
   get(path: FieldPath, prop: "value" | "rawValue" | "visible"): any {
@@ -1073,6 +1126,16 @@ class FormModel {
 
     subNode &&
       setNodeValueOnChain(path, this.subscribeManager, this.plainCacheManager);
+
+    TouchManager.setSelfTouch(
+      field,
+      true,
+      this.subscribeManager,
+      (_field, sub, touch) => {
+        this.subscribeManager.setNewValue(sub, "touch", touch);
+      },
+    );
+
     if (shouldNotify) {
       this.notify();
       this.subscribeManager.notify();
@@ -1194,6 +1257,8 @@ class FormModel {
       ),
       {
         getValue: () => void 0,
+        getTouch: () => false,
+        setTouch: () => void 0,
         setVisible: () => void 0,
         setValue: () => void 0,
         setValidation: () => void 0,
@@ -1622,6 +1687,14 @@ class FormModel {
 
 export { FormModel };
 export type {
-  ControlType, EffectInvokeReason, FieldKey, FieldPath, FieldSchema, LeafFieldDynamicProp as FieldState, FieldValue, FormSchema, MutableFieldNode, ReactiveEffect
+  ControlType,
+  EffectInvokeReason,
+  FieldKey,
+  FieldPath,
+  FieldSchema,
+  LeafFieldDynamicProp as FieldState,
+  FieldValue,
+  FormSchema,
+  MutableFieldNode,
+  ReactiveEffect,
 };
-
