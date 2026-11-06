@@ -101,7 +101,7 @@ export function markMutableNodeDirty(startNode: AnyMutableFieldNode) {
  * @param path 不包含dummy节点的路径
  * @param setter
  */
-export function setMutableNode(
+export async function setMutableNode(
   mutableModel: AnyMutableFieldNode,
   path: FieldPath,
   setter: (
@@ -117,7 +117,38 @@ export function setMutableNode(
     throw new Error("this path is not found.");
   }
 
-  const shouldUpdate = setter(nodes[nodes.length - 1], nodes, (node) => {
+  const shouldUpdate = await setter(nodes[nodes.length - 1], nodes, (node) => {
+    markMutableNodeDirty(node);
+  });
+
+  if (shouldUpdate !== false) {
+    markMutableNodeDirty(nodes[nodes.length - 1]);
+  }
+}
+
+/**
+ * 标记一个字段节点及其所有祖先节点为脏
+ * @param mutableModel
+ * @param path 不包含dummy节点的路径
+ * @param setter
+ */
+export async function setMutableNodeAsync(
+  mutableModel: AnyMutableFieldNode,
+  path: FieldPath,
+  setter: (
+    node: AnyMutableFieldNode,
+    nodesOnPath: AnyMutableFieldNode[],
+    /**用于标记此处发生改变的函数，会对这里生成全新的不可变对象 */
+    mutate: (node: AnyMutableFieldNode) => void,
+  ) => Promise<void | boolean>,
+) {
+  const nodes = getNodesOnPath(mutableModel, path, true);
+
+  if (!nodes) {
+    throw new Error("this path is not found.");
+  }
+
+  const shouldUpdate = await setter(nodes[nodes.length - 1], nodes, (node) => {
     markMutableNodeDirty(node);
   });
 

@@ -11,6 +11,7 @@ import {
   markMutableNodeDirty,
   mutableNodeToImmutableNode,
   setMutableNode,
+  setMutableNodeAsync,
 } from "./immutableHelper";
 import {
   setNodeHasNoValue,
@@ -980,27 +981,6 @@ class FormModel {
     }
   }
 
-  setRefiner(
-    path: FieldPath,
-    refiner: (z: ZodType) => ZodType,
-    ruleSet: string = "onChange",
-  ) {
-    const node = this.findNodeByPath(path);
-    if (!node) {
-      throw new Error("the field is not found:" + path);
-    }
-    if (node.type === "field") {
-      throw new Error("the field is a leaf-node:" + path);
-    }
-
-    if (node.dynamicProp.validationRefine === undefined) {
-      node.dynamicProp.validationRefine = {};
-    }
-
-    node.dynamicProp.validationRefine[ruleSet] = refiner;
-    this.validatorCacheManager.updateNode(node);
-  }
-
   getNodesOnPath(path: FieldPath, containsRoot?: boolean) {
     return getNodesOnPath(this.mutableDataSource, path, containsRoot);
   }
@@ -1438,7 +1418,7 @@ class FormModel {
    * 如需触发联动的字段校验请用`registerRule`手动触发校验
    * @param enableEnhancer 是否启用祖先字段上的跨字段校验函数
    */
-  validateFieldForRuleset(
+  async validateFieldForRuleset(
     path: FieldPath,
     enableEnhancer?: boolean,
     ruleSet: string = "onChange",
@@ -1452,107 +1432,111 @@ class FormModel {
     this.validatorCacheManager.rebuild();
     let finalError: ZodError | undefined = undefined;
     if (!enableEnhancer) {
-      setMutableNode(this.mutableDataSource, path, (node, _nodes, mutate) => {
-        const validator = node.cache.validator;
-        if (validator === "dirty") {
-          throw new Error("dirty value");
-        }
-        if (validator === "hidden") {
-          return false;
-        }
-
-        if (node.type === "field") {
-          const oldMsg = node.dynamicProp.errorMessage[ruleSet];
-
-          if (node.dynamicProp.validation[ruleSet] === undefined) {
-            // 没有校验器，直接返回
-            if (oldMsg === undefined) {
-              return false;
-            }
-            node.dynamicProp.errorMessage[ruleSet] = undefined;
-            return;
-          }
-          // 单字段校验
-          const res = node.dynamicProp.validation[ruleSet]?.safeParse(
-            node.dynamicProp.value,
-          );
-          if (res?.success) {
-            if (oldMsg === undefined) {
-              return false;
-            }
-            node.dynamicProp.errorMessage[ruleSet] = undefined;
-          } else {
-            // 只保留第一个错误信息
-            node.dynamicProp.errorMessage[ruleSet] = res?.error.issues.map(
-              (i) => i.message,
-            );
-            finalError = res?.error;
-          }
-        } else {
-          const plainObj = node.cache.plainObj;
-          if (plainObj.type === "dirty") {
+      await setMutableNodeAsync(
+        this.mutableDataSource,
+        path,
+        async (node, _nodes, mutate) => {
+          const validator = node.cache.validator;
+          if (validator === "dirty") {
             throw new Error("dirty value");
           }
-          if (node.cache.validator === "dirty") {
-            throw new Error("dirty value");
-          }
-          const validation = validator[ruleSet];
-          if (!validation) {
+          if (validator === "hidden") {
             return false;
           }
-          if (validation.type === "hasValue" && plainObj.type !== "void") {
-            // 校验全对象
-            const value = plainObj.validateData;
-            const validator = validation.validator;
-            const res = validator.safeParse(value);
 
-            const errorIssues = res.error?.issues;
-            const errorInfo = errorIssues;
+          if (node.type === "field") {
+            const oldMsg = node.dynamicProp.errorMessage[ruleSet];
 
-            if (!res.success && errorInfo) {
-              finalError = new ZodError(errorInfo);
+            if (node.dynamicProp.validation[ruleSet] === undefined) {
+              // 没有校验器，直接返回
+              if (oldMsg === undefined) {
+                return false;
+              }
+              node.dynamicProp.errorMessage[ruleSet] = undefined;
+              return;
             }
+            // 单字段校验
+            const res = await node.dynamicProp.validation[
+              ruleSet
+            ]?.safeParseAsync(node.dynamicProp.value);
+            if (res?.success) {
+              if (oldMsg === undefined) {
+                return false;
+              }
+              node.dynamicProp.errorMessage[ruleSet] = undefined;
+            } else {
+              // 只保留第一个错误信息
+              node.dynamicProp.errorMessage[ruleSet] = res?.error.issues.map(
+                (i) => i.message,
+              );
+              finalError = res?.error;
+            }
+          } else {
+            const plainObj = node.cache.plainObj;
+            if (plainObj.type === "dirty") {
+              throw new Error("dirty value");
+            }
+            if (node.cache.validator === "dirty") {
+              throw new Error("dirty value");
+            }
+            const validation = validator[ruleSet];
+            if (!validation) {
+              return false;
+            }
+            if (validation.type === "hasValue" && plainObj.type !== "void") {
+              // 校验全对象
+              const value = plainObj.validateData;
+              const validator = validation.validator;
+              const res = await validator.safeParseAsync(value);
 
-            const dfs = (node: AnyMutableFieldNode): boolean => {
-              if (node.type === "field") {
-                const info = errorInfo?.filter((e) => {
-                  return isSamePath(
-                    path.concat(e.path as string[]),
-                    node.path.slice(1),
-                  );
-                });
+              const errorIssues = res.error?.issues;
+              const errorInfo = errorIssues;
 
-                if (!info || info.length === 0) {
-                  if (node.dynamicProp.errorMessage[ruleSet] === undefined) {
-                    return false;
+              if (!res.success && errorInfo) {
+                finalError = new ZodError(errorInfo);
+              }
+
+              const dfs = (node: AnyMutableFieldNode): boolean => {
+                if (node.type === "field") {
+                  const info = errorInfo?.filter((e) => {
+                    return isSamePath(
+                      path.concat(e.path as string[]),
+                      node.path.slice(1),
+                    );
+                  });
+
+                  if (!info || info.length === 0) {
+                    if (node.dynamicProp.errorMessage[ruleSet] === undefined) {
+                      return false;
+                    }
+                    node.dynamicProp.errorMessage[ruleSet] = undefined;
+                  } else {
+                    node.dynamicProp.errorMessage[ruleSet] = info.map(
+                      (i) => i.message,
+                    );
                   }
-                  node.dynamicProp.errorMessage[ruleSet] = undefined;
-                } else {
-                  node.dynamicProp.errorMessage[ruleSet] = info.map(
-                    (i) => i.message,
-                  );
-                }
 
-                mutate(node);
-                return true;
-              }
-
-              let hasMutated = false;
-              for (let i of node.children) {
-                if (dfs(i)) {
                   mutate(node);
-                  hasMutated = true;
+                  return true;
                 }
-              }
-              return hasMutated;
-            };
-            const shouldDirty = dfs(node);
-            return shouldDirty;
-          } else if (validation.type === "dirty") {
-            throw new Error("dirty value");
+
+                let hasMutated = false;
+                for (let i of node.children) {
+                  if (dfs(i)) {
+                    mutate(node);
+                    hasMutated = true;
+                  }
+                }
+                return hasMutated;
+              };
+              const shouldDirty = dfs(node);
+              return shouldDirty;
+            } else if (validation.type === "dirty") {
+              throw new Error("dirty value");
+            }
           }
-        }
-      });
+        },
+      );
     } else {
       // 从根部校验
       const value = this.mutableDataSource.cache.plainObj;
@@ -1568,47 +1552,53 @@ class FormModel {
         return Promise.resolve();
       }
       if (value.type !== "void" && validation.type === "hasValue") {
-        const res = validation.validator.safeParse(value.validateData);
+        const res = await validation.validator.safeParseAsync(
+          value.validateData,
+        );
         const info = res.success
           ? undefined
           : res.error.issues.filter((e) =>
               isChildNode(e.path as string[], path),
             );
 
-        setMutableNode(this.mutableDataSource, path, (node, _nodes, mutate) => {
-          const dfs = (node: AnyMutableFieldNode): boolean => {
-            if (node.type === "field") {
-              if (isChildNode(node.path.slice(1), path)) {
-                const msg = info?.filter((x) => {
-                  return isSamePath(x.path as string[], node.path.slice(1));
-                });
-                if (
-                  node.dynamicProp.errorMessage[ruleSet] === undefined &&
-                  (msg === undefined || msg.length === 0)
-                ) {
-                  return false;
-                } else {
-                  node.dynamicProp.errorMessage[ruleSet] = msg?.map(
-                    (i) => i.message,
-                  );
-                  mutate(node);
-                  return true;
+        await setMutableNodeAsync(
+          this.mutableDataSource,
+          path,
+          async (node, _nodes, mutate) => {
+            const dfs = (node: AnyMutableFieldNode): boolean => {
+              if (node.type === "field") {
+                if (isChildNode(node.path.slice(1), path)) {
+                  const msg = info?.filter((x) => {
+                    return isSamePath(x.path as string[], node.path.slice(1));
+                  });
+                  if (
+                    node.dynamicProp.errorMessage[ruleSet] === undefined &&
+                    (msg === undefined || msg.length === 0)
+                  ) {
+                    return false;
+                  } else {
+                    node.dynamicProp.errorMessage[ruleSet] = msg?.map(
+                      (i) => i.message,
+                    );
+                    mutate(node);
+                    return true;
+                  }
+                }
+                return false;
+              }
+
+              let hasMutated = false;
+              for (let i of node.children) {
+                if (dfs(i)) {
+                  mutate(i);
+                  hasMutated = true;
                 }
               }
-              return false;
-            }
-
-            let hasMutated = false;
-            for (let i of node.children) {
-              if (dfs(i)) {
-                mutate(i);
-                hasMutated = true;
-              }
-            }
-            return hasMutated;
-          };
-          dfs(node);
-        });
+              return hasMutated;
+            };
+            dfs(node);
+          },
+        );
         if (!res.success && info && info.length > 0) {
           finalError = new ZodError(info);
         }

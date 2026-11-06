@@ -31,7 +31,7 @@ class ValidatorCacheManager {
   }
 
   /**
-   * 何时调用：字段 visible 发生变化，或者 validation 规则发生变化时
+   * 何时调用：字段的selfInclude被改变，或者 validation 规则发生变化时
    */
   updateNode(node: AnyMutableFieldNode) {
     const nodes = getNodesOnPath(

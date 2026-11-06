@@ -39,7 +39,7 @@ export type FormCommands = {
   resetField: (path?: FieldPath) => void;
   setValidation: (
     path: FieldPath,
-    validator: ZodType,
+    validator: Validator,
     ruleSet?: string,
   ) => void;
 
@@ -156,11 +156,11 @@ export type FieldSchema =
       label: string;
       control?: ControlType;
       validate?:
-        | ZodType
+        | Validator
         | {
-            onChange?: ZodType;
-            onBlur?: ZodType;
-            onSubmit?: ZodType;
+            onChange?: Validator;
+            onBlur?: Validator;
+            onSubmit?: Validator;
           };
       initialVisible?: boolean;
       include?: boolean;
@@ -202,6 +202,22 @@ export type FieldSchema =
       }>;
     };
 
+export type ValidationStatus = "unknown" | "valid" | "invalid" | "validating";
+export type ErrorMessage = {
+  [ruleSet: string]: {
+    message?: string;
+  };
+} | null;
+export type ValidationResult =
+  | {
+      errorMessage: ErrorMessage;
+      children?: Record<string, ValidationResult>;
+    }
+  | ErrorMessage;
+export type Validator = ValidatorAsync | ValidatorSync;
+export type ValidatorSync = (value: FieldValue) => ValidationResult;
+export type ValidatorAsync = (value: FieldValue) => Promise<ValidationResult>;
+
 // 存放字段运行时的响应式字段
 export interface LeafFieldDynamicProp {
   value?: FieldValue;
@@ -211,9 +227,7 @@ export interface LeafFieldDynamicProp {
   errorMessage: {
     [ruleSet: string]: string[] | undefined;
   };
-  validation: {
-    [ruleSet: string]: ZodType;
-  }; // 响应式校验规则
+
   controlProp: Record<string, any> | undefined;
   required: boolean;
 }
@@ -238,7 +252,6 @@ export interface NestedFieldStaticProp {
 }
 
 export interface NestedFieldDynamicProp {
-  validationRefine?: { [ruleSet: string]: (z: ZodType) => ZodType };
   visible: boolean;
   include: boolean;
   removeWhenNoChildren: boolean;
@@ -264,6 +277,9 @@ type MutableFieldNodeBaseType<type extends FieldType> = {
   parent: MutableNestedFieldNode | undefined;
   effect?: Set<ReactiveEffect>;
 
+  validation: Record<string, Validator>;
+  validationStatus: Record<string, ValidationStatus>;
+
   /** 为了生成不可变快照的辅助属性，与其他字段不同 */
   snapshot:
     | {
@@ -288,7 +304,6 @@ export type NodeCache<type extends FieldType> = {
   plainObj:
     | {
         rawData: Record<string, any> | undefined;
-        validateData: Record<string, any> | undefined;
         submitData: Record<string, any> | undefined;
         type: "ready";
       }
@@ -300,21 +315,6 @@ export type NodeCache<type extends FieldType> = {
         // 包括include=false的节点
         rawData: Record<string, any> | undefined;
         type: "void";
-      };
-  // dirty代表不知道有哪些规则集，必须遍历所有子节点收集规则集
-  validator:
-    | "dirty"
-    | "hidden"
-    | {
-        [ruleSet: string]:
-          | {
-              // 此处的dirty代表此规则集的校验对象缓存是脏的，需要重新生成
-              type: "dirty";
-            }
-          | {
-              type: "hasValue";
-              validator: ZodType;
-            };
       };
   // 该值与初始值的diff结果，深比较不相等dirty===true
   // 为了效率不考虑当前节点以及所有祖先节点的include，
