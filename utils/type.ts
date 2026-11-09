@@ -208,15 +208,23 @@ export type ErrorMessage = {
     message?: string;
   };
 } | null;
-export type ValidationResult =
-  | {
-      errorMessage: ErrorMessage;
-      children?: Record<string, ValidationResult>;
-    }
-  | ErrorMessage;
+export type ValidationResult = {
+  errorMessage: ErrorMessage;
+  children?: Record<string, ValidationResult>;
+} | null;
 export type Validator = ValidatorAsync | ValidatorSync;
 export type ValidatorSync = (value: FieldValue) => ValidationResult;
 export type ValidatorAsync = (value: FieldValue) => Promise<ValidationResult>;
+
+export function isPromise<T>(
+  value: T | PromiseLike<T>,
+): value is PromiseLike<T> {
+  return (
+    value !== null &&
+    (typeof value === "object" || typeof value === "function") &&
+    typeof (value as PromiseLike<T>).then === "function"
+  );
+}
 
 // 存放字段运行时的响应式字段
 export interface LeafFieldDynamicProp {
@@ -224,9 +232,7 @@ export interface LeafFieldDynamicProp {
   visible: boolean; // 是否显示，响应式触发
   include: boolean;
   alertTip?: React.ReactNode;
-  errorMessage: {
-    [ruleSet: string]: string[] | undefined;
-  };
+  errorMessage: ErrorMessage;
 
   controlProp: Record<string, any> | undefined;
   required: boolean;
@@ -255,6 +261,7 @@ export interface NestedFieldDynamicProp {
   visible: boolean;
   include: boolean;
   removeWhenNoChildren: boolean;
+  errorMessage: ErrorMessage;
 }
 
 export type MutableNestedFieldNode = MutableFieldNode<"array" | "object">;
@@ -277,7 +284,7 @@ type MutableFieldNodeBaseType<type extends FieldType> = {
   parent: MutableNestedFieldNode | undefined;
   effect?: Set<ReactiveEffect>;
 
-  validation: Record<string, Validator>;
+  validators: Record<string, Validator>;
   validationStatus: Record<string, ValidationStatus>;
 
   /** 为了生成不可变快照的辅助属性，与其他字段不同 */

@@ -1,178 +1,108 @@
 import { z, ZodType } from "zod";
-import { AnyMutableFieldNode, MutableFieldNode } from "./type";
-import { getNodesOnPath } from "./structures";
+import {
+  AnyMutableFieldNode,
+  FieldType,
+  MutableFieldNode,
+  ValidationStatus,
+} from "./type";
+import { FieldState, getNodesOnPath } from "./structures";
+import { isPromise } from "util/types";
 
 class ValidatorCacheManager {
   mutableDataSource: AnyMutableFieldNode;
 
-  finalValidator:
-    | "hidden"
-    | Record<
-        string,
-        {
-          type: "hasValue";
-          validator: ZodType;
-        }
-      >
-    | undefined = undefined;
-
   constructor(mutableDataSource: AnyMutableFieldNode) {
     this.mutableDataSource = mutableDataSource;
-    this.rebuild();
   }
 
-  /**
-   * 获取最终的表单校验器
-   * @returns zod 校验器
-   */
-  getFinalValidator() {
-    this.rebuild();
-    return this.finalValidator;
-  }
-
-  /**
-   * 何时调用：字段的selfInclude被改变，或者 validation 规则发生变化时
-   */
-  updateNode(node: AnyMutableFieldNode) {
-    const nodes = getNodesOnPath(
-      this.mutableDataSource,
-      node.path.slice(1),
-      true,
-    );
-
-    if (nodes === undefined) {
-      throw new Error("path error: " + node.path);
-    }
-    for (let i = nodes.length - 1; i >= 0; i--) {
-      const n = nodes[i];
-      const validatorCache = n.cache.validator;
-
-      if (validatorCache === "dirty") {
-        continue;
-      }
-      if (validatorCache === "hidden") {
-        n.cache.validator = "dirty";
-        continue;
-      }
-
-      n.cache.validator = "dirty";
-    }
-  }
-
-  /**
-   * 在调用此函数前确保已经使用 updateNode 进行过更新
-   */
-  rebuild() {
+  validateAsync(node: MutableFieldNode<FieldType>, ruleSet: string) {
     const dfs = (
-      node: AnyMutableFieldNode,
+      node: MutableFieldNode<FieldType>,
     ):
       | {
-          [ruleSet: string]: { type: "hasValue"; validator: ZodType };
+          isAsync: true;
+          promise: Promise<Omit<ValidationStatus, "unknown">>;
         }
-      | "hidden" => {
-      const cache = node.cache;
-      const include = node.dynamicProp.include;
+      | {
+          isAsync: false;
+          result: Omit<ValidationStatus, "unknown">;
+        } => {
+      if (node.validationStatus[ruleSet] !== "unknown") {
+        return { isAsync: false, result: node.validationStatus[ruleSet] };
+      }
 
       if (node.type === "field") {
-        let res:
-          | {
-              [ruleSet: string]: { type: "hasValue"; validator: ZodType };
-            }
-          | "hidden" = Object.fromEntries(
-          Object.entries(node.dynamicProp.validation).map(([rSet, v]) => {
-            return [rSet, { type: "hasValue", validator: v }];
-          }),
-        );
-        if (!include) {
-          res = "hidden";
-        }
-        cache.validator = res;
+        const ret = node.validators[ruleSet](node.dynamicProp.value);
 
-        return res;
-      } else {
-        // object 或 array 类型
-        if (
-          // 如果所有的ruleSet都有值
-          cache.validator !== "dirty" &&
-          Object.entries(cache.validator).filter(([_, v]) => v.type === "dirty")
-            .length === 0
-        ) {
-          return cache.validator as
-            | {
-                [ruleSet: string]: { type: "hasValue"; validator: ZodType };
+        if (isPromise(ret)) {
+          node.validationStatus[ruleSet] = "validating";
+
+          return {
+            isAsync: true,
+            promise: ret.then((result) => {
+              node.validationStatus[ruleSet] = result ? "invalid" : "valid";
+              node.dynamicProp.errorMessage = result?.errorMessage || {};
+              return result ? "invalid" : "valid";
+            }),
+          };
+        } else {
+          let result = ret;
+          return {
+            isAsync: false,
+            result: (node.validationStatus[ruleSet] = result
+              ? "invalid"
+              : "valid"),
+          };
+        }
+      }
+
+      const needAwait: Promise<Omit<ValidationStatus, "unknown">>[] = [];
+      const count = {
+        valid: 0,
+        invalid: 0,
+      };
+      for (let i of node.children) {
+        const retOfI = dfs(i);
+
+        if (retOfI.isAsync) {
+          needAwait.push(retOfI.promise);
+        } else {
+          if (retOfI.result === "valid") {
+            count.valid++;
+          } else {
+            count.invalid++;
+          }
+        }
+      }
+
+      if (needAwait.length > 0) {
+        return {
+          isAsync: true,
+          promise: Promise.all(needAwait).then((asyncResult) => {
+            asyncResult.forEach((item) => {
+              if (item === "valid") {
+                count.valid++;
+              } else {
+                count.invalid++;
               }
-            | "hidden";
-        }
-
-        if (!include) {
-          return "hidden";
-        }
-
-        const validatorMap: Record<string, Record<string, ZodType>> = {};
-
-        for (let child of node.children) {
-          const res = dfs(child);
-          // 只收集可见且有校验规则的字段
-          Object.entries(res).forEach(([ruleSet, v]) => {
-            if (v.type !== "hasValue") {
-              return;
-            }
-            if (!validatorMap[ruleSet]) {
-              validatorMap[ruleSet] = {};
-            }
-            validatorMap[ruleSet][child.key] = v.validator;
-          });
-        }
-
-        let validator: {
-          [ruleSet: string]: {
-            type: "hasValue";
-            validator: ZodType;
-          };
-        };
-
-        // 不管是不是数组都当对象校验，因为不确定数组的每个元素结构都一致（比如有的数组项include为false）
-        validator = Object.fromEntries(
-          Object.entries(validatorMap).map(([ruleSet, v]) => {
-            return [ruleSet, { type: "hasValue", validator: z.object(v) }];
+            });
+            return count.invalid > 0 ? "invalid" : "valid";
           }),
-        );
-
-        // 应用自定义的 refine（如果存在）
-        // 需要求字节点中出现的RuleSet和当前节点的refiner里出现的RuleSet的并集
-        const refiners = node.dynamicProp.validationRefine;
-        for (let ruleSet in refiners) {
-          // 说明该ruleSet下没有子字段约束，只有refine约束
-          validator[ruleSet] = {
-            type: "hasValue",
-            validator: refiners[ruleSet](
-              ruleSet in validator ? validator[ruleSet].validator : z.any(),
-            ),
-          };
-        }
-
-        cache.validator = validator;
-
-        // 还需要检查后代是否没有任何校验规则
-        if (include && Object.keys(validatorMap).length === 0) {
-          // 嵌套节点本身可见，但没有子节点，仍然应该有校验规则
-          cache.validator = {
-            default: { type: "hasValue", validator: z.object() },
-          };
-        }
-
-        return cache.validator as
-          | {
-              [ruleSet: string]: { type: "hasValue"; validator: ZodType };
-            }
-          | "hidden";
+        };
+      } else {
+        return {
+          isAsync: false,
+          result: count.invalid > 0 ? "invalid" : "valid",
+        };
       }
     };
 
-    const res = dfs(this.mutableDataSource);
-    this.mutableDataSource.cache.validator = res;
-
-    this.finalValidator = res;
+    const res = dfs(node);
+    if (res.isAsync) {
+      return res.promise;
+    } else {
+      return Promise.resolve(res.result);
+    }
   }
 }
 
