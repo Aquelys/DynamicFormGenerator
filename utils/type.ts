@@ -286,6 +286,7 @@ type MutableFieldNodeBaseType<type extends FieldType> = {
 
   validators: Record<string, Validator>;
   validationStatus: Record<string, ValidationStatus>;
+  validationCount: Record<string, Record<ValidationStatus, number>>;
 
   /** 为了生成不可变快照的辅助属性，与其他字段不同 */
   snapshot:

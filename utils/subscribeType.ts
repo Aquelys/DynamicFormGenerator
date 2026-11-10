@@ -1,5 +1,11 @@
 import { never } from "zod";
-import { EffectInvokeReason, FieldKey, FormCommands, ValueProxy } from "./type";
+import {
+  EffectInvokeReason,
+  FieldKey,
+  FormCommands,
+  ValidationStatus,
+  ValueProxy,
+} from "./type";
 
 export type SubscribeTopic = keyof typeof ValueTypeOfProps;
 
@@ -21,6 +27,7 @@ export const ValueTypeOfProps = {
   value: "lazy",
   rawValue: "lazy",
   error: "immediate",
+  validationStatus: "immediate",
   effect: "void",
 } as const;
 
@@ -68,7 +75,9 @@ export type SubscribePropValueType<T extends SubscribeTopic> =
             }
       : T extends "effect"
         ? void
-        : boolean;
+        : T extends "validationStatus"
+          ? ValidationStatus
+          : boolean;
 
 export type NotifiableNode = EffectNode | SubscribeNode;
 
