@@ -26,7 +26,7 @@ export const ValueTypeOfProps = {
   touch: "immediate",
   value: "lazy",
   rawValue: "lazy",
-  error: "immediate",
+  // error: "immediate",
   validationStatus: "immediate",
   effect: "void",
 } as const;
@@ -76,7 +76,7 @@ export type SubscribePropValueType<T extends SubscribeTopic> =
       : T extends "effect"
         ? void
         : T extends "validationStatus"
-          ? ValidationStatus
+          ? Record<string, ValidationStatus>
           : boolean;
 
 export type NotifiableNode = EffectNode | SubscribeNode;

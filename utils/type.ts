@@ -202,14 +202,14 @@ export type FieldSchema =
       }>;
     };
 
-export type ValidationStatus = "unknown" | "valid" | "invalid" | "validating";
+export type ValidationStatus = "valid" | "invalid" | "validating";
 export type ErrorMessage = {
   [ruleSet: string]: {
-    message?: string;
+    message?: string[] | string;
   };
 } | null;
 export type ValidationResult = {
-  errorMessage: ErrorMessage;
+  errorMessage: string[];
   children?: Record<string, ValidationResult>;
 } | null;
 export type Validator = ValidatorAsync | ValidatorSync;

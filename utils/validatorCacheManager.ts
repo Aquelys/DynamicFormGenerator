@@ -1,106 +1,204 @@
-import { z, ZodType } from "zod";
 import {
   AnyMutableFieldNode,
+  ErrorMessage,
   FieldType,
   MutableFieldNode,
+  ValidationResult,
   ValidationStatus,
 } from "./type";
-import { FieldState, getNodesOnPath } from "./structures";
 import { isPromise } from "util/types";
 import { SubscribeNode } from "./subscribeType";
 import { SubscribeManager } from "./subscribeManager";
+import { PlainObjectCacheManager } from "./plainObjectCacheManager";
 
-class ValidatorCacheManager {
+class ValidationManager {
   mutableDataSource: AnyMutableFieldNode;
   subscribedManager: SubscribeManager;
+  plainObjectManager: PlainObjectCacheManager;
 
   constructor(
     mutableDataSource: AnyMutableFieldNode,
     subscribedManager: SubscribeManager,
+    plainObjectManager: PlainObjectCacheManager,
   ) {
     this.mutableDataSource = mutableDataSource;
     this.subscribedManager = subscribedManager;
+    this.plainObjectManager = plainObjectManager;
   }
 
   validateAsync(node: MutableFieldNode<FieldType>, ruleSet: string) {
+    const setStatusAndUpdateChain = (
+      node: MutableFieldNode<FieldType>,
+      subNode: SubscribeNode | undefined,
+      newStatus: ValidationStatus,
+    ) => {
+      const before = node.validationStatus;
+      node.validationStatus = {
+        ...node.validationStatus,
+        [ruleSet]: newStatus,
+      };
+      if (subNode) {
+        this.subscribedManager.setNewValue(
+          subNode,
+          "validationStatus",
+          node.validationStatus,
+        );
+      }
+      this.updateValidationStatusOnChain(
+        node,
+        ruleSet,
+        before[ruleSet],
+        node.validationStatus[ruleSet],
+      );
+    };
+
     const dfs = (
       node: MutableFieldNode<FieldType>,
       subNode: SubscribeNode | undefined,
     ):
       | {
           isAsync: true;
-          promise: Promise<Omit<ValidationStatus, "unknown">>;
+          promise: Promise<"valid" | "invalid">;
         }
       | {
           isAsync: false;
-          result: Omit<ValidationStatus, "unknown">;
+          result: "valid" | "invalid";
         } => {
-      if (node.validationStatus[ruleSet] !== "unknown") {
-        return { isAsync: false, result: node.validationStatus[ruleSet] };
+      if (node.cache.plainObj.type === "void") {
+        return {
+          isAsync: false,
+          result: "valid",
+        };
       }
 
       if (node.type === "field") {
         const ret = node.validators[ruleSet](node.dynamicProp.value);
 
         if (isPromise(ret)) {
-          node.validationStatus[ruleSet] = "validating";
+          setStatusAndUpdateChain(node, subNode, "validating");
 
           return {
             isAsync: true,
             promise: ret.then((result) => {
-              node.validationStatus[ruleSet] = result ? "invalid" : "valid";
-              node.dynamicProp.errorMessage = result?.errorMessage || {};
+              setStatusAndUpdateChain(
+                node,
+                subNode,
+                result ? "invalid" : "valid",
+              );
+              node.dynamicProp.errorMessage = {
+                ...node.dynamicProp.errorMessage,
+                [ruleSet]: { message: result?.errorMessage || [] },
+              };
               return result ? "invalid" : "valid";
             }),
           };
         } else {
           let result = ret;
+          setStatusAndUpdateChain(node, subNode, result ? "invalid" : "valid");
+          node.dynamicProp.errorMessage = {
+            ...node.dynamicProp.errorMessage,
+            [ruleSet]: { message: result?.errorMessage || [] },
+          };
           return {
             isAsync: false,
-            result: (node.validationStatus[ruleSet] = result
-              ? "invalid"
-              : "valid"),
+            result: result ? "invalid" : "valid",
           };
         }
       }
 
-      const needAwait: Promise<Omit<ValidationStatus, "unknown">>[] = [];
-      const count = {
-        valid: 0,
-        invalid: 0,
-      };
-      for (let i of node.children) {
-        const retOfI = dfs(i, subNode?.children?.get(i.key));
+      let parentStatus: "valid" | "invalid" | "validating" = "validating";
 
-        if (retOfI.isAsync) {
-          needAwait.push(retOfI.promise);
+      const childWaitingQueue: {
+        promise: Promise<void>;
+      }[] = [];
+      let isAsync: boolean = false;
+
+      const childResult = node.children.map((x) =>
+        dfs(x, subNode?.children?.get(x.key)),
+      );
+      const childCount = {
+        valid: childResult.filter((n) => !n.isAsync && n.result === "valid")
+          .length,
+        invalid: childResult.filter((n) => !n.isAsync && n.result === "invalid")
+          .length,
+        validating: childResult.filter((n) => n.isAsync).length,
+      };
+      debugger;
+
+      for (let result of childResult) {
+        if (result.isAsync) {
+          isAsync = true;
+          childWaitingQueue.push({
+            promise: result.promise.then((res) => {
+              childCount[res]++;
+              childCount.validating--;
+              const status = getEffectiveStatus();
+              setStatusAndUpdateChain(node, subNode, status);
+            }),
+          });
         } else {
-          if (retOfI.result === "valid") {
-            count.valid++;
-          } else {
-            count.invalid++;
-          }
+          childCount[result.result]++;
         }
       }
 
-      if (needAwait.length > 0) {
+      // 也要校验当前（称为父节点）节点
+      const getEffectiveStatus = () => {
+        if (parentStatus === "invalid" || childCount.invalid > 0) {
+          return "invalid";
+        }
+        if (parentStatus === "validating" || childCount.validating > 0) {
+          return "validating";
+        }
+        return "valid";
+      };
+
+      if (node.cache.plainObj.type === "dirty") {
+        this.plainObjectManager.rebuild(node);
+      }
+      if (node.cache.plainObj.type === "dirty") {
+        throw new Error("dirty value");
+      }
+
+      const valueObj = node.cache.plainObj.submitData;
+      let parentResult = node.validators[ruleSet](valueObj);
+      let parentPromise: Promise<void>;
+
+      if (isPromise(parentResult)) {
+        isAsync = true;
+        parentStatus = "validating";
+        setStatusAndUpdateChain(node, subNode, getEffectiveStatus());
+
+        parentPromise = parentResult.then((result) => {
+          parentStatus = result ? "invalid" : "valid";
+          this.setErrorMessage(node, result, ruleSet);
+          // return parentStatus;
+        });
+      } else {
+        parentStatus = parentResult ? "invalid" : "valid";
+        parentPromise = Promise.resolve();
+        const status = getEffectiveStatus();
+        this.setErrorMessage(node, parentResult, ruleSet);
+        setStatusAndUpdateChain(node, subNode, status);
+      }
+
+      if (isAsync) {
         return {
           isAsync: true,
-          promise: Promise.all(needAwait).then((asyncResult) => {
-            asyncResult.forEach((item) => {
-              if (item === "valid") {
-                count.valid++;
-              } else {
-                count.invalid++;
-              }
-            });
-            return count.invalid > 0 ? "invalid" : "valid";
+          promise: Promise.all([
+            ...childWaitingQueue.map((item) => item.promise),
+            parentPromise,
+          ]).then(() => {
+            const status = getEffectiveStatus() as "valid" | "invalid";
+            setStatusAndUpdateChain(node, subNode, status);
+            return status;
           }),
         };
       } else {
+        const status = getEffectiveStatus() as "valid" | "invalid";
+        setStatusAndUpdateChain(node, subNode, status);
         return {
           isAsync: false,
-          result: count.invalid > 0 ? "invalid" : "valid",
+          result: status,
         };
       }
     };
@@ -109,38 +207,52 @@ class ValidatorCacheManager {
     const res = dfs(node, subNode);
     const promise = res.isAsync ? res.promise : Promise.resolve(res.result);
 
-    const before = ValidatorCacheManager.getValidationStatus(node, ruleSet);
-
     // 由于有异步，展示校验中状态
     if (res.isAsync) {
-      subNode &&
-        this.subscribedManager.setNewValue(
-          subNode,
-          "validationStatus",
-          "validating",
-        );
+      setStatusAndUpdateChain(node, subNode, "validating");
+      this.subscribedManager.notify();
     }
 
     return promise.then((res) => {
-      this.updateValidationStatusOnChain(
-        node,
-        ruleSet,
-        before,
-        ValidatorCacheManager.getValidationStatus(node, ruleSet),
-      );
-      subNode &&
-        this.subscribedManager.setNewValue(
-          subNode,
-          "validationStatus",
-          res === "valid" ? "valid" : "invalid",
-        );
+      setStatusAndUpdateChain(node, subNode, res);
+      this.subscribedManager.notify();
     });
+  }
+
+  private setErrorMessage(
+    node: MutableFieldNode<FieldType>,
+    msg: ValidationResult,
+    ruleSet: string,
+  ) {
+    const dfs = (
+      node: MutableFieldNode<FieldType>,
+      msg: ValidationResult | undefined,
+    ) => {
+      if (node.type === "field") {
+        node.dynamicProp.errorMessage = {
+          ...node.dynamicProp.errorMessage,
+          [ruleSet]: { message: msg?.errorMessage || [] },
+        };
+        return;
+      }
+
+      // 节点树必须全量遍历
+      for (let child of node.children) {
+        dfs(child, msg?.children?.[child.key]);
+      }
+      node.dynamicProp.errorMessage = {
+        ...node.dynamicProp.errorMessage,
+        [ruleSet]: { message: msg?.errorMessage || [] },
+      };
+    };
+
+    dfs(node, msg);
   }
 
   private updateValidationStatusOnChain(
     node: MutableFieldNode<FieldType>,
     ruleSet: string,
-    oldStatus: ValidationStatus,
+    oldStatus: ValidationStatus | undefined,
     newStatus: ValidationStatus,
   ) {
     if (oldStatus === newStatus) {
@@ -150,7 +262,6 @@ class ValidatorCacheManager {
     const subNodes: (SubscribeNode | undefined)[] = [
       this.subscribedManager.findNode([]),
     ];
-    let curNode: AnyMutableFieldNode | undefined = this.mutableDataSource;
 
     {
       let subNode = subNodes[0];
@@ -162,6 +273,8 @@ class ValidatorCacheManager {
       subNodes.reverse();
     }
 
+    let curNode: AnyMutableFieldNode | undefined = node.parent;
+
     for (let i = 1; i < subNodes.length; i++) {
       const subNode = subNodes[i];
 
@@ -169,44 +282,51 @@ class ValidatorCacheManager {
         throw new Error("impossible");
       }
 
-      const old = ValidatorCacheManager.getValidationStatus(curNode, ruleSet);
-      curNode.validationCount[ruleSet][oldStatus]--;
+      const old = ValidationManager.getValidationStatus(
+        curNode.validationCount[ruleSet],
+      );
+      if (oldStatus) {
+        curNode.validationCount[ruleSet][oldStatus]--;
+      }
       curNode.validationCount[ruleSet][newStatus]++;
-      const newVal = ValidatorCacheManager.getValidationStatus(
-        curNode,
-        ruleSet,
+      const newVal = ValidationManager.getValidationStatus(
+        curNode.validationCount[ruleSet],
       );
 
-      if (subNode?.subscriber) {
-        this.subscribedManager.setNewValue(subNode, "validationStatus", newVal);
-      }
+      curNode.validationStatus = {
+        ...curNode.validationStatus,
+        [ruleSet]: newVal,
+      };
 
       if (old === newVal) {
         break;
       }
 
-      if (curNode.type === "field") {
-        throw new Error("shape is incompitable");
+      if (subNode) {
+        this.subscribedManager.setNewValue(
+          subNode,
+          "validationStatus",
+          curNode.validationStatus,
+        );
       }
 
       curNode = curNode.parent;
     }
   }
 
-  private static getValidationStatus(
-    node: MutableFieldNode<FieldType>,
-    ruleSet: string,
-  ): ValidationStatus {
-    if (node.validationCount[ruleSet].invalid > 0) {
+  private static getValidationStatus(count: {
+    valid: number;
+    invalid: number;
+    validating: number;
+  }): ValidationStatus {
+    if (count.invalid > 0) {
       return "invalid";
-    } else if (node.validationCount[ruleSet].validating > 0) {
+    } else if (count.validating > 0) {
       return "validating";
-    } else if (node.validationCount[ruleSet].unknown > 0) {
-      return "unknown";
     } else {
       return "valid";
     }
   }
 }
 
-export { ValidatorCacheManager };
+export { ValidationManager as ValidatorCacheManager };
